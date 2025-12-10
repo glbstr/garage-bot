@@ -3,22 +3,21 @@ import os
 import asyncio
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
-    Message, CallbackQuery,
-    KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove,
-    InlineKeyboardButton, InlineKeyboardMarkup
+    Message, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 )
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# 🔐 Конфиг из переменных окружения
+# 🔐 Загружаем конфиг из переменных окружения (для безопасности и облака)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))
 
 if not BOT_TOKEN or not GROUP_CHAT_ID:
     raise ValueError("❌ Укажите BOT_TOKEN и GROUP_CHAT_ID в переменных окружения!")
 
+# Инициализация
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
@@ -46,34 +45,29 @@ SERVICES_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 def extract_service(text: str) -> str:
-    if "Запись" in text: return "Запись"
-    if "Сведение" in text: return "Сведение"
-    if "Аранжировка" in text: return "Аранжировка"
-    if "под ключ" in text: return "Трек «под ключ»"
+    if "Запись" in text:
+        return "Запись"
+    elif "Сведение" in text:
+        return "Сведение"
+    elif "Аранжировка" in text:
+        return "Аранжировка"
+    elif "под ключ" in text:
+        return "Трек «под ключ»"
     return text
 
-# === /start ===
+# /start
 @router.message(Command("start"))
-async def cmd_start(message: Message, command: CommandObject, state: FSMContext):
-    # Сбрасываем состояние
-    await state.clear()
+async def cmd_start(message: Message, state: FSMContext):
     await message.answer(
-        "👋 Привет! Это студия звукозаписи *«ГАРАЖ»*!\n\n"
-        "Какая услуга вас интересует?",
-        reply_markup=SERVICES_KEYBOARD,
-        parse_mode="Markdown"
+        "Привет, это студия звукозаписи “ГАРАЖ”! Какая услуга вас интересует?",
+        reply_markup=SERVICES_KEYBOARD
     )
     await state.set_state(FSM.choosing_service)
 
-# === Выбор услуги ===
+# Выбор услуги
 @router.message(FSM.choosing_service)
 async def service_chosen(message: Message, state: FSMContext):
     service = extract_service(message.text)
-    if service not in ["Запись", "Сведение", "Аранжировка", "Трек «под ключ»"]:
-        # Некорректный ввод → предложим начать заново
-        await fallback_handler(message, state)
-        return
-
     await state.update_data(service=service)
 
     if service == "Сведение":
@@ -92,7 +86,11 @@ async def service_chosen(message: Message, state: FSMContext):
         await message.answer("В каком жанре вы хотите записать трек?", reply_markup=ReplyKeyboardRemove())
         await state.set_state(FSM.genre)
 
-# === Сведение: MP3 ===
+    else:
+        await message.answer("Неизвестная услуга. Пожалуйста, выберите из списка.")
+        await state.set_state(FSM.choosing_service)
+
+# === Сведение: ожидание MP3 ===
 @router.message(FSM.waiting_for_mp3, F.audio | F.document)
 async def mp3_received(message: Message, state: FSMContext):
     user = message.from_user
@@ -115,7 +113,7 @@ async def mp3_received(message: Message, state: FSMContext):
 async def not_mp3(message: Message):
     await message.answer("Пожалуйста, пришлите именно MP3-файл (аудиофайл или документ).")
 
-# === Аранжировка / Под ключ: жанр ===
+# === Аранжировка и «под ключ»: жанр ===
 @router.message(FSM.genre)
 async def genre_received(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -135,7 +133,8 @@ async def genre_received(message: Message, state: FSMContext):
 async def hours_received(message: Message, state: FSMContext):
     try:
         hours = int(message.text)
-        if hours <= 0: raise ValueError
+        if hours <= 0:
+            raise ValueError
         await state.update_data(hours=hours)
         await message.answer("В какой день вы хотите записаться? (например: 12.12.2025)")
         await state.set_state(FSM.recording_date)
@@ -163,31 +162,7 @@ async def time_received(message: Message, state: FSMContext):
     await message.answer("✅ Ваша заявка отправлена звукорежиссёрам!")
     await state.clear()
 
-# === Fallback: любое сообщение вне FSM → кнопка «Начать» ===
-@router.message()
-async def fallback_handler(message: Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is None:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="▶️ Выбрать услугу", callback_data="start_bot")]
-        ])
-        await message.answer(
-            "🎬 Добро пожаловать в студию *«ГАРАЖ»*!\n\n"
-            "Нажмите кнопку ниже, чтобы начать — и мы поможем записать ваш трек!",
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
-    else:
-        # Если в процессе — не мешаем (можно добавить «Отмена» позже)
-        pass
-
-# === Кнопка «Начать» → эмуляция /start ===
-@router.callback_query(F.data == "start_bot")
-async def start_bot(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await cmd_start(callback.message, None, state)
-
-# === Запуск ===
+# Запуск
 async def main():
     print("✅ Бот студии «ГАРАЖ» запущен!")
     await dp.start_polling(bot)
