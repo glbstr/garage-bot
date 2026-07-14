@@ -35,7 +35,7 @@ class FSM(StatesGroup):
 # Кнопки услуг
 SERVICES_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🔹 Запись — от 500₽/час")],
+        [KeyboardButton(text="🔹 Запись — от 1000₽/час")],
         [KeyboardButton(text="🔹 Сведение — от 1 500₽")],
         [KeyboardButton(text="🔹 Аранжировка — от 1 500₽")],
         [KeyboardButton(text="🔹 Трек «под ключ» — от 5 000₽")]
