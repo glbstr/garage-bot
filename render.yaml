@@ -9,3 +9,7 @@ services:
         sync: false
       - key: GROUP_CHAT_ID
         sync: false
+      # Строка подключения PostgreSQL (Neon → Connection string), например
+      # postgresql://user:password@ep-xxx.neon.tech/neondb?sslmode=require
+      - key: DATABASE_URL
+        sync: false

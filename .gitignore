@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+garage.db
+.pytest_cache/

@@ -1,171 +1,457 @@
-# garage_bot.py
-import os
+# garage_bot.py — бот студии звукозаписи «ГАРАЖ»
+from __future__ import annotations
+
 import asyncio
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import (
-    Message, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
-)
-from aiogram.filters import Command
+import logging
+import os
+from datetime import date, datetime, timedelta
+from html import escape
+
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ChatType, ParseMode
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, User
 
-# 🔐 Загружаем конфиг из переменных окружения (для безопасности и облака)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))
+import keyboards as kb
+from config import Service, Settings, load_settings
+from slots import available_days, free_starts, last_bookable_day
+from storage import DbFSMStorage, Repository, SlotTaken, make_engine
 
-if not BOT_TOKEN or not GROUP_CHAT_ID:
-    raise ValueError("❌ Укажите BOT_TOKEN и GROUP_CHAT_ID в переменных окружения!")
+log = logging.getLogger("garage_bot")
 
-# Инициализация
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
-router = Router()
-dp.include_router(router)
+settings: Settings
+repo: Repository
 
-# Состояния FSM
+private = Router()
+private.message.filter(F.chat.type == ChatType.PRIVATE)
+private.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
+group = Router()
+
+DONE_TEXT = "✅ Ваша заявка №{id} отправлена звукорежиссёрам! Скоро с вами свяжутся."
+WEEKDAYS_FULL = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+
+MP3_MIME = {"audio/mpeg", "audio/mp3", "audio/mpeg3"}
+WAV_MIME = {"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"}
+
+
 class FSM(StatesGroup):
     choosing_service = State()
-    recording_hours = State()
-    recording_date = State()
-    recording_time = State()
+    booking_hours = State()
+    booking_date = State()
+    booking_time = State()
+    booking_confirm = State()
+    waiting_file = State()
     genre = State()
-    waiting_for_mp3 = State()
 
-# Кнопки услуг
-SERVICES_KEYBOARD = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🔹 Запись — от 1000₽/час")],
-        [KeyboardButton(text="🔹 Сведение — от 1 500₽")],
-        [KeyboardButton(text="🔹 Аранжировка — от 1 500₽")],
-        [KeyboardButton(text="🔹 Трек «под ключ» — от 5 000₽")]
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=True
-)
 
-def extract_service(text: str) -> str:
-    if "Запись" in text:
-        return "Запись"
-    elif "Сведение" in text:
-        return "Сведение"
-    elif "Аранжировка" in text:
-        return "Аранжировка"
-    elif "под ключ" in text:
-        return "Трек «под ключ»"
-    return text
+# ---------- helpers ----------
 
-# /start
-@router.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
-    await message.answer(
-        "Привет, это студия звукозаписи “ГАРАЖ”! Какая услуга вас интересует?",
-        reply_markup=SERVICES_KEYBOARD
-    )
-    await state.set_state(FSM.choosing_service)
+def now() -> datetime:
+    return datetime.now(settings.tz)
 
-# Выбор услуги
-@router.message(FSM.choosing_service)
-async def service_chosen(message: Message, state: FSMContext):
-    service = extract_service(message.text)
-    await state.update_data(service=service)
 
-    if service == "Сведение":
-        await message.answer("Пожалуйста, пришлите MP3-файл трека для сведения.", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(FSM.waiting_for_mp3)
+def fmt_day(d: date) -> str:
+    return f"{d:%d.%m.%Y} ({WEEKDAYS_FULL[d.weekday()]})"
 
-    elif service == "Аранжировка":
-        await message.answer("Какой жанр аранжировки вам нужен?", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(FSM.genre)
 
-    elif service == "Запись":
-        await message.answer("Сколько часов вы хотите взять?", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(FSM.recording_hours)
+def fmt_hours(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} час"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return f"{n} часа"
+    return f"{n} часов"
 
-    elif service == "Трек «под ключ»":
-        await message.answer("В каком жанре вы хотите записать трек?", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(FSM.genre)
 
+def client_html(user: User) -> str:
+    name = escape(user.full_name or "клиент")
+    link = f'<a href="tg://user?id={user.id}">{name}</a>'
+    return f"{link} (@{escape(user.username)})" if user.username else link
+
+
+def user_fields(user: User) -> dict:
+    return {"user_id": user.id, "username": user.username, "full_name": user.full_name}
+
+
+async def render(event: Message | CallbackQuery, text: str, markup: InlineKeyboardMarkup | None = None) -> None:
+    """Нажатие кнопки — правим то же сообщение; текст от клиента — отвечаем новым."""
+    if isinstance(event, CallbackQuery):
+        try:
+            await event.message.edit_text(text, reply_markup=markup)
+        except TelegramBadRequest as e:
+            if "message is not modified" not in str(e):
+                await event.message.answer(text, reply_markup=markup)
+        await event.answer()
     else:
-        await message.answer("Неизвестная услуга. Пожалуйста, выберите из списка.")
-        await state.set_state(FSM.choosing_service)
+        await event.answer(text, reply_markup=markup)
 
-# === Сведение: ожидание MP3 ===
-@router.message(FSM.waiting_for_mp3, F.audio | F.document)
-async def mp3_received(message: Message, state: FSMContext):
-    user = message.from_user
-    profile_link = f"@{user.username}" if user.username else f"tg://user?id={user.id}"
 
-    text = f"Сведение\n{profile_link}\nзапись"
-    await bot.send_message(GROUP_CHAT_ID, text)
+async def current_service(state: FSMContext) -> Service | None:
+    return settings.service((await state.get_data()).get("service_id", ""))
 
-    if message.audio:
-        await bot.send_audio(GROUP_CHAT_ID, message.audio.file_id)
-    elif message.document and message.document.mime_type == "audio/mpeg":
-        await bot.send_document(GROUP_CHAT_ID, message.document.file_id)
-    else:
-        await bot.send_message(GROUP_CHAT_ID, "⚠️ Получен файл, но не MP3 — проверьте.")
 
-    await message.answer("✅ Ваша заявка отправлена звукорежиссёрам!")
-    await state.clear()
-
-@router.message(FSM.waiting_for_mp3)
-async def not_mp3(message: Message):
-    await message.answer("Пожалуйста, пришлите именно MP3-файл (аудиофайл или документ).")
-
-# === Аранжировка и «под ключ»: жанр ===
-@router.message(FSM.genre)
-async def genre_received(message: Message, state: FSMContext):
-    data = await state.get_data()
-    service = data["service"]
-    genre = message.text
-
-    user = message.from_user
-    profile_link = f"@{user.username}" if user.username else f"tg://user?id={user.id}"
-
-    text = f"{service}\n{profile_link}\n{genre}"
-    await bot.send_message(GROUP_CHAT_ID, text)
-    await message.answer("✅ Ваша заявка отправлена звукорежиссёрам!")
-    await state.clear()
-
-# === Запись: часы → дата → время ===
-@router.message(FSM.recording_hours)
-async def hours_received(message: Message, state: FSMContext):
+async def notify_group(text: str, *, audio: str | None = None, document: str | None = None) -> None:
     try:
-        hours = int(message.text)
-        if hours <= 0:
-            raise ValueError
-        await state.update_data(hours=hours)
-        await message.answer("В какой день вы хотите записаться? (например: 12.12.2025)")
-        await state.set_state(FSM.recording_date)
-    except ValueError:
-        await message.answer("Пожалуйста, введите корректное количество часов (целое число > 0).")
+        if audio:
+            await bot.send_audio(settings.group_chat_id, audio, caption=text)
+        elif document:
+            await bot.send_document(settings.group_chat_id, document, caption=text)
+        else:
+            await bot.send_message(settings.group_chat_id, text)
+    except Exception:  # заявка уже в БД, не теряем её из-за ошибки отправки
+        log.exception("Не удалось отправить заявку в группу")
 
-@router.message(FSM.recording_date)
-async def date_received(message: Message, state: FSMContext):
-    await state.update_data(date=message.text)
-    await message.answer("В какой промежуток времени? (например: 15:00–18:00)")
-    await state.set_state(FSM.recording_time)
 
-@router.message(FSM.recording_time)
-async def time_received(message: Message, state: FSMContext):
+# ---------- шаги диалога ----------
+
+async def show_services(event: Message | CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(FSM.choosing_service)
+    await state.set_data({})
+    await render(
+        event,
+        "Привет, это студия звукозаписи «ГАРАЖ»! Какая услуга вас интересует?",
+        kb.services_kb(settings.services),
+    )
+
+
+async def show_hours(event: Message | CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(FSM.booking_hours)
+    await render(event, "Сколько часов вы хотите взять?", kb.hours_kb(settings.schedule.max_hours))
+
+
+async def show_calendar(event: Message | CallbackQuery, state: FSMContext, month: date | None = None) -> None:
+    await state.set_state(FSM.booking_date)
+    hours = (await state.get_data())["hours"]
+    current = now()
+    today = current.date()
+    last = last_bookable_day(today, settings.schedule)
+    month = (month or today).replace(day=1)
+    month = max(month, today.replace(day=1))
+    month = min(month, last.replace(day=1))
+    next_month = (month + timedelta(days=32)).replace(day=1)
+    month_end = next_month - timedelta(days=1)
+
+    bookings = await repo.bookings_between(month, month_end)
+    days = available_days(max(month, today), min(month_end, last), hours, bookings, settings.schedule, current)
+    text = f"Выберите день для записи на {fmt_hours(hours)}."
+    if not days:
+        text += "\nВ этом месяце свободных дней нет, посмотрите следующий месяц."
+    await render(event, text, kb.calendar_kb(month.year, month.month, days, today, last))
+
+
+async def show_slots(event: Message | CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
+    day = date.fromisoformat(data["date"])
     hours = data["hours"]
-    date = data["date"]
-    time_range = message.text
+    starts = free_starts(day, hours, await repo.bookings_between(day, day), settings.schedule, now())
+    if not starts:
+        if isinstance(event, CallbackQuery):
+            await event.answer("На этот день свободного времени уже нет", show_alert=True)
+        await show_calendar(event, state, day)
+        return
+    await state.set_state(FSM.booking_time)
+    await render(event, f"{fmt_day(day)}, {fmt_hours(hours)}. Выберите время:", kb.slots_kb(starts, hours))
 
-    user = message.from_user
-    profile_link = f"@{user.username}" if user.username else f"tg://user?id={user.id}"
 
-    text = f"Запись\n{hours} ч, {date}, {time_range}\n{profile_link}"
-    await bot.send_message(GROUP_CHAT_ID, text)
-    await message.answer("✅ Ваша заявка отправлена звукорежиссёрам!")
+async def show_confirm(event: Message | CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(FSM.booking_confirm)
+    data = await state.get_data()
+    svc = await current_service(state)
+    day = date.fromisoformat(data["date"])
+    start, hours = data["start"], data["hours"]
+    lines = [
+        "Проверьте заявку:",
+        f"Услуга: {escape(svc.title)}",
+        f"Дата: {fmt_day(day)}",
+        f"Время: {start:02d}:00–{start + hours:02d}:00 ({fmt_hours(hours)})",
+    ]
+    if svc.price_per_hour:
+        lines.append(f"Ориентировочно: {svc.price_per_hour * hours:,} ₽".replace(",", " "))
+    await render(event, "\n".join(lines), kb.confirm_kb())
+
+
+# ---------- команды ----------
+
+@private.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
+    await show_services(message, state)
+
+
+@private.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
+    await message.answer("Заявка отменена. Чтобы начать заново, нажмите /start")
 
-# Запуск
-async def main():
-    print("✅ Бот студии «ГАРАЖ» запущен!")
+
+@private.callback_query(kb.NavCb.filter(F.action == "cancel"))
+async def nav_cancel(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await render(call, "Заявка отменена. Чтобы начать заново, нажмите /start")
+
+
+@private.callback_query(kb.NavCb.filter(F.action == "back"))
+async def nav_back(call: CallbackQuery, state: FSMContext):
+    st = await state.get_state()
+    if st == FSM.booking_date.state:
+        await show_hours(call, state)
+    elif st == FSM.booking_time.state:
+        data = await state.get_data()
+        await show_calendar(call, state, date.fromisoformat(data["date"]))
+    elif st == FSM.booking_confirm.state:
+        await show_slots(call, state)
+    else:  # часы, жанр, файл — назад к выбору услуги
+        await show_services(call, state)
+
+
+# ---------- выбор услуги ----------
+
+@private.callback_query(FSM.choosing_service, kb.ServiceCb.filter())
+async def service_chosen(call: CallbackQuery, callback_data: kb.ServiceCb, state: FSMContext):
+    svc = settings.service(callback_data.id)
+    if svc is None:
+        await show_services(call, state)
+        return
+    await state.set_data({"service_id": svc.id})
+    if svc.kind == "booking":
+        await show_hours(call, state)
+    elif svc.kind == "file":
+        await state.set_state(FSM.waiting_file)
+        await render(call, f"{escape(svc.title)}: пришлите трек файлом MP3 или WAV.", kb.nav_kb())
+    else:
+        await state.set_state(FSM.genre)
+        await render(call, f"{escape(svc.title)}: в каком жанре?", kb.nav_kb())
+
+
+@private.message(FSM.choosing_service)
+async def service_text(message: Message, state: FSMContext):
+    await message.answer("Выберите услугу кнопкой:", reply_markup=kb.services_kb(settings.services))
+
+
+# ---------- запись: часы → дата → время → подтверждение ----------
+
+@private.callback_query(FSM.booking_hours, kb.HoursCb.filter())
+async def hours_chosen(call: CallbackQuery, callback_data: kb.HoursCb, state: FSMContext):
+    if not 1 <= callback_data.n <= settings.schedule.max_hours:
+        await call.answer()
+        return
+    await state.update_data(hours=callback_data.n)
+    await show_calendar(call, state)
+
+
+@private.callback_query(FSM.booking_date, kb.CalCb.filter(F.action == "month"))
+async def calendar_month(call: CallbackQuery, callback_data: kb.CalCb, state: FSMContext):
+    await show_calendar(call, state, date(callback_data.y, callback_data.m, 1))
+
+
+@private.callback_query(FSM.booking_date, kb.CalCb.filter(F.action == "day"))
+async def date_chosen(call: CallbackQuery, callback_data: kb.CalCb, state: FSMContext):
+    day = date(callback_data.y, callback_data.m, callback_data.d)
+    await state.update_data(date=day.isoformat())
+    await show_slots(call, state)
+
+
+@private.callback_query(kb.CalCb.filter(F.action == "noop"))
+async def calendar_noop(call: CallbackQuery):
+    await call.answer()
+
+
+@private.callback_query(FSM.booking_time, kb.SlotCb.filter())
+async def slot_chosen(call: CallbackQuery, callback_data: kb.SlotCb, state: FSMContext):
+    data = await state.get_data()
+    day = date.fromisoformat(data["date"])
+    starts = free_starts(day, data["hours"], await repo.bookings_between(day, day), settings.schedule, now())
+    if callback_data.h not in starts:
+        await call.answer("Это время уже занято, выберите другое", show_alert=True)
+        await show_slots(call, state)
+        return
+    await state.update_data(start=callback_data.h)
+    await show_confirm(call, state)
+
+
+@private.callback_query(FSM.booking_confirm, kb.ConfirmCb.filter())
+async def booking_confirmed(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    svc = await current_service(state)
+    day = date.fromisoformat(data["date"])
+    start, hours = data["start"], data["hours"]
+    if start not in free_starts(day, hours, [], settings.schedule, now()):
+        await call.answer("Это время уже прошло, выберите другое", show_alert=True)
+        await show_slots(call, state)
+        return
+    try:
+        req_id = await repo.add_request(
+            booking=(day, start, hours),
+            service_id=svc.id, service_title=svc.title, **user_fields(call.from_user),
+        )
+    except SlotTaken:
+        await call.answer("Пока вы выбирали, это время заняли. Выберите другое.", show_alert=True)
+        await show_slots(call, state)
+        return
+    await state.clear()
+    await render(call, DONE_TEXT.format(id=req_id))
+    await notify_group(
+        f"🆕 Заявка №{req_id}: {escape(svc.title)}\n"
+        f"{fmt_day(day)}, {start:02d}:00–{start + hours:02d}:00 ({fmt_hours(hours)})\n"
+        f"{client_html(call.from_user)}"
+    )
+
+
+@private.message(StateFilter(FSM.booking_hours, FSM.booking_date, FSM.booking_time, FSM.booking_confirm))
+async def booking_text(message: Message):
+    await message.answer("Пожалуйста, выберите вариант кнопкой выше, или нажмите /cancel, чтобы отменить.")
+
+
+# ---------- сведение: файл MP3/WAV ----------
+
+def audio_format(message: Message) -> str | None:
+    f = message.audio or message.document
+    if f is None:
+        return None
+    name = (f.file_name or "").lower()
+    mime = (f.mime_type or "").lower()
+    if name.endswith(".mp3") or mime in MP3_MIME:
+        return "MP3"
+    if name.endswith(".wav") or mime in WAV_MIME:
+        return "WAV"
+    return None
+
+
+@private.message(FSM.waiting_file, F.audio | F.document)
+async def file_received(message: Message, state: FSMContext):
+    fmt = audio_format(message)
+    if fmt is None:
+        await message.answer("Этот формат не подходит. Пришлите трек в MP3 или WAV.", reply_markup=kb.nav_kb())
+        return
+    svc = await current_service(state)
+    f = message.audio or message.document
+    req_id = await repo.add_request(
+        service_id=svc.id, service_title=svc.title, details=f"{fmt}: {f.file_name or 'без имени'}",
+        file_id=f.file_id, **user_fields(message.from_user),
+    )
+    await state.clear()
+    await message.answer(DONE_TEXT.format(id=req_id))
+    caption = (
+        f"🆕 Заявка №{req_id}: {escape(svc.title)} ({fmt})\n"
+        f"{escape(f.file_name or '')}\n{client_html(message.from_user)}"
+    )
+    if message.audio:
+        await notify_group(caption, audio=f.file_id)
+    else:
+        await notify_group(caption, document=f.file_id)
+
+
+@private.message(FSM.waiting_file)
+async def file_missing(message: Message):
+    await message.answer("Пришлите трек файлом в формате MP3 или WAV.", reply_markup=kb.nav_kb())
+
+
+# ---------- аранжировка и «под ключ»: жанр ----------
+
+@private.message(FSM.genre, F.text)
+async def genre_received(message: Message, state: FSMContext):
+    genre = message.text.strip()
+    if not genre or genre.startswith("/"):
+        await message.answer("Напишите жанр текстом, например: хип-хоп, поп, рок.", reply_markup=kb.nav_kb())
+        return
+    genre = genre[:500]
+    svc = await current_service(state)
+    req_id = await repo.add_request(
+        service_id=svc.id, service_title=svc.title, details=genre, **user_fields(message.from_user),
+    )
+    await state.clear()
+    await message.answer(DONE_TEXT.format(id=req_id))
+    await notify_group(
+        f"🆕 Заявка №{req_id}: {escape(svc.title)}\nЖанр: {escape(genre)}\n{client_html(message.from_user)}"
+    )
+
+
+@private.message(FSM.genre)
+async def genre_not_text(message: Message):
+    await message.answer("Напишите жанр текстом.", reply_markup=kb.nav_kb())
+
+
+# ---------- прочее ----------
+
+@private.callback_query()
+async def stale_button(call: CallbackQuery):
+    await call.answer("Эта кнопка уже неактуальна. Нажмите /start, чтобы начать заново.", show_alert=True)
+
+
+@private.message()
+async def no_state(message: Message):
+    await message.answer("Чтобы оставить заявку, нажмите /start")
+
+
+# ---------- команды для группы звукорежиссёров ----------
+
+def in_studio_group(message: Message) -> bool:
+    return message.chat.id == settings.group_chat_id
+
+
+@group.message(Command("bookings"), in_studio_group)
+async def cmd_bookings(message: Message):
+    today = now().date()
+    items = await repo.bookings_between(today, last_bookable_day(today, settings.schedule))
+    if not items:
+        await message.answer("Ближайших записей нет.")
+        return
+    lines = ["📅 Ближайшие записи:"]
+    for b in items:
+        who = f"@{escape(b.username)}" if b.username else escape(b.full_name or str(b.user_id))
+        lines.append(f"№{b.id} · {b.booking_date:%d.%m} {b.start_hour:02d}:00–{b.end_hour:02d}:00 · {who}")
+    lines.append("\nОсвободить время: /cancel_booking номер")
+    await message.answer("\n".join(lines))
+
+
+@group.message(Command("cancel_booking"), in_studio_group)
+async def cmd_cancel_booking(message: Message, command: CommandObject):
+    arg = (command.args or "").strip().lstrip("№#")
+    if not arg.isdigit():
+        await message.answer("Укажите номер заявки: /cancel_booking 12")
+        return
+    if await repo.cancel_request(int(arg)):
+        await message.answer(f"Заявка №{arg} отменена, время освобождено.")
+    else:
+        await message.answer(f"Заявка №{arg} не найдена или уже отменена.")
+
+
+# ---------- запуск ----------
+
+async def start_health_server() -> None:
+    """Render (type: web) ждёт, что сервис слушает порт $PORT. Отвечаем «ok», бот работает через polling."""
+    port = os.getenv("PORT")
+    if not port:
+        return
+    from aiohttp import web
+
+    app = web.Application()
+    app.router.add_get("/", lambda _: web.Response(text="ok"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(port)).start()
+    log.info("Health-check слушает порт %s", port)
+
+
+async def main() -> None:
+    global settings, repo, bot
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    settings = load_settings()
+    engine = make_engine(settings.database_url)
+    repo = Repository(engine)
+    await repo.create_schema()
+
+    bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher(storage=DbFSMStorage(engine))
+    dp.include_routers(group, private)
+    await start_health_server()
+    log.info("✅ Бот студии «ГАРАЖ» запущен (БД: %s)", engine.url.get_backend_name())
     await dp.start_polling(bot)
+
+
+bot: Bot
 
 if __name__ == "__main__":
     asyncio.run(main())
