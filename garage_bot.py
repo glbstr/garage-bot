@@ -11,11 +11,16 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # 🔐 Загружаем конфиг из переменных окружения (для безопасности и облака)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+_group_chat_id_raw = os.getenv("GROUP_CHAT_ID", "").strip()
 
-if not BOT_TOKEN or not GROUP_CHAT_ID:
-    raise ValueError("❌ Укажите BOT_TOKEN и GROUP_CHAT_ID в переменных окружения!")
+if not BOT_TOKEN or not _group_chat_id_raw:
+    raise SystemExit("❌ Укажите BOT_TOKEN и GROUP_CHAT_ID в переменных окружения!")
+
+try:
+    GROUP_CHAT_ID = int(_group_chat_id_raw)
+except ValueError:
+    raise SystemExit(f"❌ GROUP_CHAT_ID должен быть числом (например -1001234567890), сейчас: {_group_chat_id_raw!r}")
 
 # Инициализация
 bot = Bot(token=BOT_TOKEN)
@@ -162,8 +167,23 @@ async def time_received(message: Message, state: FSMContext):
     await message.answer("✅ Ваша заявка отправлена звукорежиссёрам!")
     await state.clear()
 
+# Health-check для Render (type: web ждёт, что сервис слушает порт $PORT)
+async def start_health_server():
+    port = os.getenv("PORT")
+    if not port:
+        return
+    from aiohttp import web
+
+    app = web.Application()
+    app.router.add_get("/", lambda _: web.Response(text="ok"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(port)).start()
+    print(f"Health-check слушает порт {port}")
+
 # Запуск
 async def main():
+    await start_health_server()
     print("✅ Бот студии «ГАРАЖ» запущен!")
     await dp.start_polling(bot)
 
