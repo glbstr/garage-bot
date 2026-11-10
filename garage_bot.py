@@ -167,8 +167,23 @@ async def time_received(message: Message, state: FSMContext):
     await message.answer("✅ Ваша заявка отправлена звукорежиссёрам!")
     await state.clear()
 
+# Health-check для Render (type: web ждёт, что сервис слушает порт $PORT)
+async def start_health_server():
+    port = os.getenv("PORT")
+    if not port:
+        return
+    from aiohttp import web
+
+    app = web.Application()
+    app.router.add_get("/", lambda _: web.Response(text="ok"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(port)).start()
+    print(f"Health-check слушает порт {port}")
+
 # Запуск
 async def main():
+    await start_health_server()
     print("✅ Бот студии «ГАРАЖ» запущен!")
     await dp.start_polling(bot)
 
