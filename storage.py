@@ -14,7 +14,7 @@ from aiogram.fsm.state import State
 from aiogram.fsm.storage.base import BaseStorage, StateType, StorageKey
 from sqlalchemy import (
     BigInteger, Column, Date, DateTime, Integer, MetaData, String, Table, Text,
-    and_, insert, select, update,
+    and_, insert, inspect, select, text, update,
 )
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -25,7 +25,8 @@ requests_table = Table(
     "requests", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
-    Column("user_id", BigInteger, nullable=False),
+    # Для заявок с сайта user_id пустой: клиента в Telegram мы ещё не знаем.
+    Column("user_id", BigInteger),
     Column("username", String(64)),
     Column("full_name", String(256)),
     Column("service_id", String(64), nullable=False),
@@ -37,7 +38,20 @@ requests_table = Table(
     Column("hours", Integer),
     # new — новая заявка, cancelled — отменена (слот освобождается)
     Column("status", String(16), nullable=False, default="new"),
+    # bot — заявка из Telegram-бота, site — с сайта
+    Column("source", String(16), nullable=False, default="bot", server_default="bot"),
+    Column("contact_name", String(128)),
+    Column("contact", String(128)),
+    Column("comment", Text),
 )
+
+# Колонки, которых не было в первой версии таблицы requests: их добавляет Repository.create_schema.
+_ADDED_COLUMNS = {
+    "source": "VARCHAR(16) NOT NULL DEFAULT 'bot'",
+    "contact_name": "VARCHAR(128)",
+    "contact": "VARCHAR(128)",
+    "comment": "TEXT",
+}
 
 fsm_table = Table(
     "fsm_state", metadata,
@@ -71,7 +85,10 @@ class Booking:
     hours: int
     username: str | None
     full_name: str | None
-    user_id: int
+    user_id: int | None
+    source: str = "bot"
+    contact_name: str | None = None
+    contact: str | None = None
 
     @property
     def end_hour(self) -> int:
@@ -92,6 +109,26 @@ class Repository:
     async def create_schema(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
+            await conn.run_sync(self._upgrade_requests)
+
+    @staticmethod
+    def _upgrade_requests(conn) -> None:
+        """Доводит таблицу requests, созданную прежней версией бота, до текущей схемы."""
+        columns = {c["name"]: c for c in inspect(conn).get_columns("requests")}
+        for name, ddl in _ADDED_COLUMNS.items():
+            if name not in columns:
+                conn.execute(text(f"ALTER TABLE requests ADD COLUMN {name} {ddl}"))
+        if columns["user_id"]["nullable"]:
+            return
+        if conn.dialect.name == "postgresql":
+            conn.execute(text("ALTER TABLE requests ALTER COLUMN user_id DROP NOT NULL"))
+        else:  # SQLite не умеет снимать NOT NULL: пересоздаём таблицу и переносим строки
+            names = ", ".join(c.name for c in requests_table.columns)
+            conn.execute(text("DROP INDEX IF EXISTS ix_requests_booking_date"))
+            conn.execute(text("ALTER TABLE requests RENAME TO requests_old"))
+            requests_table.create(conn)
+            conn.execute(text(f"INSERT INTO requests ({names}) SELECT {names} FROM requests_old"))
+            conn.execute(text("DROP TABLE requests_old"))
 
     async def bookings_between(self, start: date, end: date) -> list[Booking]:
         """Активные брони с датой в [start, end]."""
@@ -106,7 +143,8 @@ class Repository:
             Booking(
                 id=r["id"], booking_date=r["booking_date"], start_hour=r["start_hour"],
                 hours=r["hours"], username=r["username"], full_name=r["full_name"],
-                user_id=r["user_id"],
+                user_id=r["user_id"], source=r["source"],
+                contact_name=r["contact_name"], contact=r["contact"],
             )
             for r in rows
         ]

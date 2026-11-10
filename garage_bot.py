@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import date, datetime, timedelta
 from html import escape
 
@@ -17,7 +16,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, User
 
 import keyboards as kb
+import website
 from config import Service, Settings, load_settings
+from formatting import fmt_day, fmt_hours
 from slots import available_days, free_starts, last_bookable_day
 from storage import DbFSMStorage, Repository, SlotTaken, make_engine
 
@@ -32,7 +33,6 @@ private.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 group = Router()
 
 DONE_TEXT = "✅ Ваша заявка №{id} отправлена звукорежиссёрам! Скоро с вами свяжутся."
-WEEKDAYS_FULL = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
 
 MP3_MIME = {"audio/mpeg", "audio/mp3", "audio/mpeg3"}
 WAV_MIME = {"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"}
@@ -52,18 +52,6 @@ class FSM(StatesGroup):
 
 def now() -> datetime:
     return datetime.now(settings.tz)
-
-
-def fmt_day(d: date) -> str:
-    return f"{d:%d.%m.%Y} ({WEEKDAYS_FULL[d.weekday()]})"
-
-
-def fmt_hours(n: int) -> str:
-    if n % 10 == 1 and n % 100 != 11:
-        return f"{n} час"
-    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
-        return f"{n} часа"
-    return f"{n} часов"
 
 
 def client_html(user: User) -> str:
@@ -400,7 +388,10 @@ async def cmd_bookings(message: Message):
         return
     lines = ["📅 Ближайшие записи:"]
     for b in items:
-        who = f"@{escape(b.username)}" if b.username else escape(b.full_name or str(b.user_id))
+        if b.source == "site":
+            who = f"{escape(b.contact_name or 'клиент')}, {escape(b.contact or 'без контакта')} (с сайта)"
+        else:
+            who = f"@{escape(b.username)}" if b.username else escape(b.full_name or str(b.user_id))
         lines.append(f"№{b.id} · {b.booking_date:%d.%m} {b.start_hour:02d}:00–{b.end_hour:02d}:00 · {who}")
     lines.append("\nОсвободить время: /cancel_booking номер")
     await message.answer("\n".join(lines))
@@ -420,21 +411,6 @@ async def cmd_cancel_booking(message: Message, command: CommandObject):
 
 # ---------- запуск ----------
 
-async def start_health_server() -> None:
-    """Render (type: web) ждёт, что сервис слушает порт $PORT. Отвечаем «ok», бот работает через polling."""
-    port = os.getenv("PORT")
-    if not port:
-        return
-    from aiohttp import web
-
-    app = web.Application()
-    app.router.add_get("/", lambda _: web.Response(text="ok"))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", int(port)).start()
-    log.info("Health-check слушает порт %s", port)
-
-
 async def main() -> None:
     global settings, repo, bot
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -446,7 +422,9 @@ async def main() -> None:
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=DbFSMStorage(engine))
     dp.include_routers(group, private)
-    await start_health_server()
+    # Сайт студии работает в этом же процессе: Render (type: web) ждёт, что сервис слушает $PORT.
+    me = await bot.get_me()
+    await website.start(settings, repo, notify_group, bot_username=me.username)
     log.info("✅ Бот студии «ГАРАЖ» запущен (БД: %s)", engine.url.get_backend_name())
     await dp.start_polling(bot)
 
