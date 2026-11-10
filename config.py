@@ -57,11 +57,15 @@ def _env_int(name: str) -> int:
         raise SystemExit(f"❌ {name} должен быть числом, сейчас: {raw!r}")
 
 
-def load_settings() -> Settings:
+def load_settings(require_bot: bool = True) -> Settings:
+    """require_bot=False — для предпросмотра сайта без Telegram (python website.py)."""
     bot_token = os.getenv("BOT_TOKEN", "").strip()
-    if not bot_token:
-        raise SystemExit("❌ Укажите BOT_TOKEN в переменных окружения!")
-    group_chat_id = _env_int("GROUP_CHAT_ID")
+    if require_bot:
+        if not bot_token:
+            raise SystemExit("❌ Укажите BOT_TOKEN в переменных окружения!")
+        group_chat_id = _env_int("GROUP_CHAT_ID")
+    else:
+        group_chat_id = 0
     database_url = os.getenv("DATABASE_URL", "").strip() or "sqlite+aiosqlite:///garage.db"
 
     with open(SETTINGS_PATH, "rb") as f:

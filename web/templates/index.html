@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{ studio.name }} · {{ studio.tagline }}, {{ studio.city }}</title>
+<meta name="description" content="{{ studio.description }}">
+<meta name="theme-color" content="#120d0a">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ studio.name }} · {{ studio.tagline }}">
+<meta property="og:description" content="{{ studio.description }}">
+{% if studio.site_url %}
+<meta property="og:url" content="{{ studio.site_url }}/">
+<meta property="og:image" content="{{ studio.site_url }}/static/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="{{ studio.site_url }}/">
+{% endif %}
+<link rel="icon" href="/static/favicon.png?v={{ v }}" type="image/png">
+<link rel="preload" href="/static/fonts/press-start-2p-cyrillic-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/site.css?v={{ v }}">
+</head>
+<body>
+<a class="skip" href="#booking">Сразу к заявке</a>
+
+<header class="top">
+  <a class="logo" href="/" aria-label="{{ studio.name }}, {{ studio.tagline }}">
+    <span class="logo-name">{{ studio.name }}</span>
+    <span class="logo-sub">{{ studio.tagline }} · {{ studio.city }}</span>
+  </a>
+  <a class="btn" href="#booking" data-open="booking"><span class="rec-dot" aria-hidden="true"></span>Записаться</a>
+</header>
+
+<main>
+  <section class="stage" aria-label="Комната студии">
+    <h1 class="sr">Студия звукозаписи «{{ studio.name }}», {{ studio.city }}</h1>
+    <div class="room" id="room">
+      <div class="room-inner" id="room-inner" style="aspect-ratio:{{ scene.width }}/{{ scene.height }}">
+        <img id="scene-img" class="scene" src="/static/scene.png?v={{ v }}" width="{{ scene.width }}" height="{{ scene.height }}"
+             alt="Пиксельная комната студии: стол с экраном и мониторами, микрофон на стойке, гитара, клавиши, стеллаж с техникой, диван и кресло">
+        {% for h in hotspots %}
+        <a class="hs hs-{{ h.pos }}" href="#{{ h.target }}" data-open="{{ h.target }}" data-obj="{{ h.id }}"
+           style="left:{{ h.left }}%;top:{{ h.top }}%"><i aria-hidden="true"></i><span>{{ h.label }}</span></a>
+        {% endfor %}
+      </div>
+    </div>
+    <p class="pan-hint" id="pan-hint" hidden aria-hidden="true">← комнату можно двигать →</p>
+    <p class="hint">Комната работает как меню. <b>Экран</b> открывает заявку, <b>календарь на стене</b> показывает цены, <b>техника</b> рассказывает о себе.</p>
+    <nav class="quick" aria-label="Разделы">
+      <a class="chip chip-main" href="#booking" data-open="booking">Заявка</a>
+      <a class="chip" href="#prices" data-open="prices">Цены</a>
+      <a class="chip" href="#gear" data-open="gear">Техника</a>
+      <a class="chip" href="#contacts" data-open="contacts">Адрес и связь</a>
+    </nav>
+  </section>
+
+  <div class="sheets">
+    <div class="slot slot-wide" id="booking">
+      <section class="win" aria-labelledby="booking-t">
+        <header class="win-bar">
+          <h2 id="booking-t">Заявка</h2>
+          <button class="win-x" type="button" aria-label="Закрыть окно" hidden>×</button>
+        </header>
+        <div class="win-body">
+          <div class="splash" aria-hidden="true">
+            <span class="splash-name">{{ studio.name }}</span>
+            <span class="splash-sub">{{ studio.tagline }}</span>
+          </div>
+          <noscript><p class="warn">Форма работает только с включённым JavaScript. Можно написать нам напрямую, контакты ниже.</p></noscript>
+          <form id="req" class="form" novalidate hidden>
+            <fieldset class="field">
+              <legend>Что нужно</legend>
+              <div class="services">
+                {% for s in services %}
+                <label class="svc">
+                  <input type="radio" name="service_id" value="{{ s.id }}" data-kind="{{ s.kind }}"{% if loop.first %} checked{% endif %}>
+                  <span><b>{{ s.title }}</b><em>{{ s.price }}</em></span>
+                </label>
+                {% endfor %}
+              </div>
+            </fieldset>
+
+            <div data-for="booking" class="group">
+              <label class="field field-short" for="f-hours">Сколько часов
+                <select id="f-hours" name="hours"></select>
+              </label>
+              <fieldset class="field">
+                <legend>День</legend>
+                <div class="days" id="days" role="radiogroup" aria-label="День"><p class="dim">Загружаем свободные дни…</p></div>
+              </fieldset>
+              <fieldset class="field">
+                <legend>Время</legend>
+                <div class="times" id="times"><p class="dim">Сначала выберите день.</p></div>
+              </fieldset>
+              <p class="estimate" id="estimate" aria-live="polite"></p>
+            </div>
+
+            <div data-for="genre" class="group" hidden>
+              <label class="field" for="f-genre">Жанр
+                <input id="f-genre" name="genre" type="text" maxlength="200" placeholder="например: архивкор, плагг, трэп">
+              </label>
+            </div>
+
+            <div data-for="file" class="group" hidden>
+              <label class="field" for="f-link"><span>Ссылка на трек (необязательно)</span>
+                <input id="f-link" name="link" type="url" maxlength="300" placeholder="облако, SoundCloud, Яндекс Диск">
+              </label>
+              <p class="note">Файлы MP3 или WAV можно прислать позже, когда мы ответим.</p>
+            </div>
+
+            <div class="pair">
+              <label class="field" for="f-name">Как к вам обращаться
+                <input id="f-name" name="name" type="text" maxlength="80" autocomplete="name" required>
+              </label>
+              <label class="field" for="f-contact">Telegram или телефон
+                <input id="f-contact" name="contact" type="text" maxlength="80" placeholder="@ник или +7…" required>
+              </label>
+            </div>
+            <label class="field" for="f-comment"><span>Комментарий (необязательно)</span>
+              <textarea id="f-comment" name="comment" maxlength="1000" rows="2"></textarea>
+            </label>
+            <label class="trap" aria-hidden="true">Не заполняйте это поле
+              <input name="website" type="text" tabindex="-1" autocomplete="off">
+            </label>
+
+            <p class="error" id="form-error" role="alert"></p>
+            <button class="btn btn-wide" type="submit"><span class="rec-dot" aria-hidden="true"></span>Отправить заявку</button>
+            <p class="note">Заявка придёт звукорежиссёрам, и мы свяжемся с вами. Контакт используем только для ответа по заявке.</p>
+          </form>
+          <div id="done" class="done" hidden tabindex="-1">
+            <h3>Заявка №<span id="done-id"></span> отправлена</h3>
+            <p>Звукорежиссёры уже получили её и скоро свяжутся с вами.</p>
+            {% if bot_username %}
+            <p>Ещё можно записаться через бота: <a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener">@{{ bot_username }}</a>.</p>
+            {% endif %}
+            <button class="chip" type="button" id="again">Отправить ещё одну</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="slot" id="prices">
+      <section class="win" aria-labelledby="prices-t">
+        <header class="win-bar">
+          <h2 id="prices-t">Цены</h2>
+          <button class="win-x" type="button" aria-label="Закрыть окно" hidden>×</button>
+        </header>
+        <div class="win-body">
+          <dl class="rows">
+            {% for s in services %}
+            <div><dt>{{ s.title }}</dt><dd>{{ s.price }}</dd></div>
+            {% endfor %}
+          </dl>
+          <p class="note">Работаем с {{ open_hour }}:00 до {{ close_hour }}:00{% if days_off %}, выходные: {{ days_off }}{% endif %}. Точную стоимость назовём после заявки.</p>
+          <a class="btn" href="#booking" data-open="booking"><span class="rec-dot" aria-hidden="true"></span>Записаться</a>
+        </div>
+      </section>
+    </div>
+
+    <div class="slot" id="contacts">
+      <section class="win" aria-labelledby="contacts-t">
+        <header class="win-bar">
+          <h2 id="contacts-t">Адрес и связь</h2>
+          <button class="win-x" type="button" aria-label="Закрыть окно" hidden>×</button>
+        </header>
+        <div class="win-body">
+          <p class="address">{{ address.line }}</p>
+          <dl class="rows">
+            <div><dt>Часы работы</dt><dd>{{ open_hour }}:00–{{ close_hour }}:00</dd></div>
+            <div><dt>Домофон</dt><dd>{{ address.intercom | known }}</dd></div>
+            <div><dt>Парковка</dt><dd>{{ address.parking | known }}</dd></div>
+            {% if address.how_to_find %}
+            <div><dt>Как найти</dt><dd>{{ address.how_to_find }}</dd></div>
+            {% endif %}
+            <div><dt>Telegram</dt><dd>{% if telegram %}<a href="https://t.me/{{ telegram }}" target="_blank" rel="noopener">@{{ telegram }}</a>{% else %}уточнить{% endif %}</dd></div>
+            <div><dt>Телефон</dt><dd>{% if phone %}<a href="tel:{{ phone_href }}">{{ phone }}</a>{% else %}уточнить{% endif %}</dd></div>
+            {% if bot_username %}
+            <div><dt>Бот для заявок</dt><dd><a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener">@{{ bot_username }}</a></dd></div>
+            {% endif %}
+          </dl>
+          <div class="actions">
+            <a class="chip" href="{{ map_url }}" target="_blank" rel="noopener">Открыть на карте</a>
+            <button class="chip" type="button" id="copy-address" data-text="{{ address.line }}" hidden>Скопировать адрес</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="slot slot-wide" id="gear">
+      <section class="win" aria-labelledby="gear-t">
+        <header class="win-bar">
+          <h2 id="gear-t">Техника</h2>
+          <button class="win-x" type="button" aria-label="Закрыть окно" hidden>×</button>
+        </header>
+        <div class="win-body">
+          <div class="gear">
+            {% for g in gear %}
+            <article class="gear-item" id="gear-{{ g.id }}" tabindex="-1">
+              <h3>{{ g.title }}</h3>
+              <p>{{ g.text }}</p>
+              {% if g.specs %}
+              <dl class="rows rows-small">
+                {% for spec in g.specs %}
+                <div><dt>{{ spec[0] }}</dt><dd>{{ spec[1] | known }}</dd></div>
+                {% endfor %}
+              </dl>
+              {% endif %}
+            </article>
+            {% endfor %}
+          </div>
+          <a class="btn" href="#booking" data-open="booking"><span class="rec-dot" aria-hidden="true"></span>Записаться</a>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<footer class="foot">
+  <p>{{ studio.name }} · {{ studio.tagline }} · {{ address.line }}</p>
+</footer>
+
+<div class="backdrop" id="backdrop" hidden></div>
+<script id="cfg" type="application/json">{{ config_json | safe }}</script>
+<script src="/static/site.js?v={{ v }}" defer></script>
+</body>
+</html>
