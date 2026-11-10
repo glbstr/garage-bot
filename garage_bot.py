@@ -11,11 +11,16 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # 🔐 Загружаем конфиг из переменных окружения (для безопасности и облака)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+_group_chat_id_raw = os.getenv("GROUP_CHAT_ID", "").strip()
 
-if not BOT_TOKEN or not GROUP_CHAT_ID:
-    raise ValueError("❌ Укажите BOT_TOKEN и GROUP_CHAT_ID в переменных окружения!")
+if not BOT_TOKEN or not _group_chat_id_raw:
+    raise SystemExit("❌ Укажите BOT_TOKEN и GROUP_CHAT_ID в переменных окружения!")
+
+try:
+    GROUP_CHAT_ID = int(_group_chat_id_raw)
+except ValueError:
+    raise SystemExit(f"❌ GROUP_CHAT_ID должен быть числом (например -1001234567890), сейчас: {_group_chat_id_raw!r}")
 
 # Инициализация
 bot = Bot(token=BOT_TOKEN)
