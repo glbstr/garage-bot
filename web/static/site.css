@@ -52,9 +52,8 @@ fieldset{border:0;padding:0;min-width:0}
 /* ---------- шапка ---------- */
 .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
   width:100%;max-width:1160px;margin:0 auto;padding:16px var(--gutter) 6px}
-.logo{display:flex;flex-direction:column;gap:7px;text-decoration:none;color:var(--cream)}
-.logo-name{font-family:var(--f-title);font-size:clamp(20px,5vw,30px);letter-spacing:3px;line-height:1;text-shadow:3px 3px 0 #000}
-.logo-sub{font-size:13px;letter-spacing:1.5px;text-transform:uppercase;color:var(--dim);line-height:1}
+.logo{display:block;line-height:0}
+.logo img{display:block;height:clamp(66px,13vw,96px);width:auto;max-width:100%}
 
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;font-family:var(--f-title);font-size:11px;line-height:1.3;
   color:var(--ink);background:var(--amber);border:0;padding:13px 16px;cursor:pointer;text-decoration:none;text-transform:uppercase;
@@ -72,7 +71,7 @@ fieldset{border:0;padding:0;min-width:0}
 .chip-main{color:var(--amber);box-shadow:0 0 0 2px var(--amber)}
 
 /* ---------- сцена ---------- */
-.stage{display:flex;flex-direction:column;align-items:center;gap:14px;padding:6px 0 28px}
+.stage{display:flex;flex-direction:column;align-items:center;gap:14px;padding:6px 0 34px}
 .room{width:100%;max-width:1160px;padding:0 var(--gutter);display:flex;justify-content:center}
 .room-inner{position:relative;width:100%;flex:none}
 .scene{display:block;width:100%;height:100%;image-rendering:pixelated;image-rendering:crisp-edges;-webkit-user-select:none;user-select:none;
@@ -108,7 +107,9 @@ fieldset{border:0;padding:0;min-width:0}
 .quick{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;padding:2px var(--gutter)}
 
 /* ---------- окна ---------- */
-.sheets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:26px;width:100%;max-width:920px;margin:0 auto;padding:0 var(--gutter) 40px}
+/* Окна живут в разметке, но видны только когда открыты поверх сцены. */
+.sheets{width:100%;max-width:920px;margin:0 auto;padding:0 var(--gutter)}
+.win:not(.open){display:none}
 .slot{min-width:0;scroll-margin-top:16px}
 .slot-wide{grid-column:1/-1}
 .win{background:var(--panel);box-shadow:0 0 0 3px #000,0 0 0 6px var(--line);display:flex;flex-direction:column;min-width:0;height:100%}
@@ -202,12 +203,8 @@ textarea{resize:vertical;min-height:62px}
 
 .foot{padding:18px var(--gutter) calc(22px + env(safe-area-inset-bottom,0px));text-align:center;color:#8a7b68;font-size:13px;border-top:2px solid #1c1512}
 
-@media (max-width:720px){
-  .sheets{grid-template-columns:1fr}
-}
 @media (max-width:480px){
   .top{flex-wrap:nowrap}
-  .logo-sub{font-size:10px;letter-spacing:.5px}
   .pair{grid-template-columns:1fr}
   .win-body{padding:14px}
   .btn{font-size:10px;padding:12px 13px}

@@ -25,8 +25,6 @@
     if (openWinEl && openWinEl !== win) closeWin(true);
     if (!openWinEl) {
       lastFocus = document.activeElement;
-      // место окна на странице остаётся занятым, чтобы она не прыгала
-      win.parentNode.style.minHeight = win.parentNode.offsetHeight + 'px';
       win.classList.add('open');
       win.setAttribute('role', 'dialog');
       win.setAttribute('aria-modal', 'true');
@@ -53,7 +51,6 @@
     win.classList.remove('open');
     win.removeAttribute('role');
     win.removeAttribute('aria-modal');
-    win.parentNode.style.minHeight = '';
     $('.win-x', win).hidden = true;
     $$('.hit', win).forEach(function (n) { n.classList.remove('hit'); });
     backdrop.hidden = true;
@@ -99,7 +96,7 @@
     var vh = window.innerHeight, fit = avail / W, scale;
     if (fit >= 2.4) {
       // целый масштаб: пиксели остаются ровными; сцена целиком помещается в первый экран
-      scale = Math.max(2, Math.floor(Math.min(fit, (vh - 230) / H)));
+      scale = Math.max(2, Math.floor(Math.min(fit, (vh - 270) / H)));
     } else {
       // телефон: комната крупнее экрана, её двигают пальцем
       scale = Math.max(2, Math.min(3, Math.floor(vh * 0.58 / H)));

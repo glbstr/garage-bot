@@ -20,14 +20,14 @@
 <link rel="icon" href="/static/favicon.png?v={{ v }}" type="image/png">
 <link rel="preload" href="/static/fonts/press-start-2p-cyrillic-400-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/site.css?v={{ v }}">
+<noscript><style>.win:not(.open){display:flex}.sheets{padding-top:24px}.win-x{display:none}</style></noscript>
 </head>
 <body>
 <a class="skip" href="#booking">Сразу к заявке</a>
 
 <header class="top">
-  <a class="logo" href="/" aria-label="{{ studio.name }}, {{ studio.tagline }}">
-    <span class="logo-name">{{ studio.name }}</span>
-    <span class="logo-sub">{{ studio.tagline }} · {{ studio.city }}</span>
+  <a class="logo" href="/">
+    <img src="/static/logo.png?v={{ v }}" width="460" height="320" alt="{{ studio.name }}, {{ studio.tagline }}">
   </a>
   <a class="btn" href="#booking" data-open="booking"><span class="rec-dot" aria-hidden="true"></span>Записаться</a>
 </header>
